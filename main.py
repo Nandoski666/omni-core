@@ -6,7 +6,7 @@ import httpx
 from fastapi import FastAPI, Request, HTTPException, Header, BackgroundTasks, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from groq import Groq
+from groq import AsyncGroq  # <-- ¡Ojo! Cambiado a AsyncGroq
 from dotenv import load_dotenv
 
 # Cargamos las variables de entorno
@@ -30,8 +30,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inicializamos Groq
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# Inicializamos Groq en modo Asíncrono 🚀
+client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
 
 class ChatRequest(BaseModel):
     prompt: str
@@ -40,7 +40,8 @@ class ChatRequest(BaseModel):
 
 async def get_omni_response(user_text: str):
     try:
-        chat_completion = client.chat.completions.create(
+        # Aquí le metemos el 'await' para que no bloquee a FastAPI
+        chat_completion = await client.chat.completions.create(
             messages=[
                 {"role": "system", "content": "Eres OMNI, el AI Setter experto de una agencia de automatización. Califica al cliente y agenda citas."},
                 {"role": "user", "content": user_text}
@@ -71,8 +72,14 @@ async def send_whatsapp_message(to_phone: str, text: str):
             print(f"⚠️ Detalle error Meta: {response.text}")
 
 async def process_whatsapp_ai(phone_number: str, user_text: str):
-    ai_answer = await get_omni_response(user_text)
-    await send_whatsapp_message(phone_number, ai_answer)
+    # Try-Catch blindado para que no muera en silencio
+    try:
+        print(f"🧠 Pensando respuesta para {phone_number}...")
+        ai_answer = await get_omni_response(user_text)
+        print(f"🗣️ OMNI dice: {ai_answer}")
+        await send_whatsapp_message(phone_number, ai_answer)
+    except Exception as e:
+        print(f"🚨 ERROR CRÍTICO EN BACKGROUND TASK: {e}")
 
 # --- ENDPOINTS ---
 
@@ -96,7 +103,6 @@ async def verify_webhook(request: Request):
 async def receive_whatsapp(request: Request, background_tasks: BackgroundTasks, x_hub_signature_256: str = Header(None)):
     body_bytes = await request.body()
     
-    # 🕵️‍♂️ DEBUG TOTAL: Ver qué llega de Meta
     data = json.loads(body_bytes.decode('utf-8'))
     print(f"🔍 JSON RECIBIDO: {json.dumps(data, indent=2)}")
 
@@ -104,26 +110,4 @@ async def receive_whatsapp(request: Request, background_tasks: BackgroundTasks, 
         signature = hmac.new(META_APP_SECRET.encode('utf-8'), body_bytes, hashlib.sha256).hexdigest()
         if f"sha256={signature}" != x_hub_signature_256:
             print("❌ Firma inválida")
-            raise HTTPException(status_code=401, detail="Firma inválida")
-
-    try:
-        # Buscamos el mensaje en la estructura de Meta
-        entry = data.get("entry", [{}])[0]
-        changes = entry.get("changes", [{}])[0]
-        value = changes.get("value", {})
-        
-        if "messages" in value:
-            message = value["messages"][0]
-            phone_number = message["from"]
-            user_text = message.get("text", {}).get("body", "")
-            
-            if user_text:
-                print(f"🌊 Nuevo mensaje de {phone_number}: {user_text}")
-                background_tasks.add_task(process_whatsapp_ai, phone_number, user_text)
-        else:
-            print("ℹ️ Webhook recibido pero no contiene mensajes (puede ser un status de entrega).")
-            
-    except Exception as e:
-        print(f"❌ Error procesando JSON: {e}")
-
-    return {"status": "received"}
+            raise
