@@ -3,10 +3,10 @@ import hmac
 import hashlib
 import json
 import httpx
-from fastapi import FastAPI, Request, HTTPException, Header, BackgroundTasks, Response
+from fastapi import FastAPI, Request, HTTPException, Header, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from groq import AsyncGroq  # <-- ¡Ojo! Cambiado a AsyncGroq
+from groq import AsyncGroq
 from dotenv import load_dotenv
 
 # Cargamos las variables de entorno
@@ -40,7 +40,6 @@ class ChatRequest(BaseModel):
 
 async def get_omni_response(user_text: str):
     try:
-        # Aquí le metemos el 'await' para que no bloquee a FastAPI
         chat_completion = await client.chat.completions.create(
             messages=[
                 {"role": "system", "content": "Eres OMNI, el AI Setter experto de una agencia de automatización. Califica al cliente y agenda citas."},
@@ -72,14 +71,13 @@ async def send_whatsapp_message(to_phone: str, text: str):
             print(f"⚠️ Detalle error Meta: {response.text}")
 
 async def process_whatsapp_ai(phone_number: str, user_text: str):
-    # Try-Catch blindado para que no muera en silencio
     try:
         print(f"🧠 Pensando respuesta para {phone_number}...")
         ai_answer = await get_omni_response(user_text)
         print(f"🗣️ OMNI dice: {ai_answer}")
         await send_whatsapp_message(phone_number, ai_answer)
     except Exception as e:
-        print(f"🚨 ERROR CRÍTICO EN BACKGROUND TASK: {e}")
+        print(f"🚨 ERROR CRÍTICO EN PROCESAMIENTO: {e}")
 
 # --- ENDPOINTS ---
 
@@ -100,14 +98,37 @@ async def verify_webhook(request: Request):
     return Response(content="Token invalido", status_code=403)
 
 @app.post("/webhook")
-async def receive_whatsapp(request: Request, background_tasks: BackgroundTasks, x_hub_signature_256: str = Header(None)):
+async def receive_whatsapp(request: Request, x_hub_signature_256: str = Header(None)):
     body_bytes = await request.body()
     
     data = json.loads(body_bytes.decode('utf-8'))
     print(f"🔍 JSON RECIBIDO: {json.dumps(data, indent=2)}")
 
+    # Seguridad HMAC SHA-256
     if META_APP_SECRET and x_hub_signature_256:
         signature = hmac.new(META_APP_SECRET.encode('utf-8'), body_bytes, hashlib.sha256).hexdigest()
         if f"sha256={signature}" != x_hub_signature_256:
             print("❌ Firma inválida")
-            raise
+            raise HTTPException(status_code=401, detail="Firma inválida")
+
+    try:
+        entry = data.get("entry", [{}])[0]
+        changes = entry.get("changes", [{}])[0]
+        value = changes.get("value", {})
+        
+        if "messages" in value:
+            message = value["messages"][0]
+            phone_number = message["from"]
+            user_text = message.get("text", {}).get("body", "")
+            
+            if user_text:
+                print(f"🌊 Nuevo mensaje de {phone_number}: {user_text}")
+                # 🔥 EJECUCIÓN DIRECTA: No hay BackgroundTasks, el servidor se queda esperando
+                await process_whatsapp_ai(phone_number, user_text)
+        else:
+            print("ℹ️ Webhook recibido pero no contiene mensajes.")
+            
+    except Exception as e:
+        print(f"❌ Error procesando JSON: {e}")
+
+    return {"status": "received"}
