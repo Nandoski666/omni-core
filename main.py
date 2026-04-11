@@ -10,6 +10,7 @@ from groq import AsyncGroq
 from dotenv import load_dotenv
 from datetime import datetime
 import base64
+import io
 
 # Cargamos las variables de entorno
 load_dotenv()
@@ -46,6 +47,9 @@ active_sessions = {}
 # Nota: Llama 4 Scout es el modelo multimodal más reciente en Groq
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 FALLBACK_VISION_MODEL = "llama-3.2-11b-vision-preview"
+
+# --- MODELO DE AUDIO ---
+AUDIO_MODEL = "whisper-large-v3"
 
 # --- FUNCIONES LÓGICAS ---
 
@@ -93,6 +97,7 @@ async def get_omni_response(phone_number: str, user_text: str):
         "2. CAPTURA DE DATOS: Necesitas Nombre del Evento, Fecha y Hora para agendar.\n"
         "3. ACCIÓN: Cuando tengas los datos, utiliza la herramienta 'create_event' para agendarlo de verdad.\n"
         "4. IMÁGENES Y PAGOS: A veces recibirás descripciones de imágenes (como comprobantes de pago). En ese caso, confirma los datos (Banco, Monto, Referencia) y felicita al usuario por su pago o agenda la cita si la imagen era un flyer.\n"
+        "5. NOTAS DE VOZ: Si recibes una transcripción de un audio, actúa como si te lo hubieran dicho en persona, con mucho entusiasmo y confirmando los detalles si se trata de una cita.\n"
         "HOY ES: " + datetime.now().strftime("%A, %d de %B de %Y, hora %I:%M %p")
     )
     
@@ -235,6 +240,22 @@ async def analyze_image_with_vision(image_bytes: bytes):
         print(f"❌ Error total en Groq Vision: {e}")
         return f"Error técnico al analizar la imagen: {str(e)}"
 
+async def transcribe_audio(audio_bytes: bytes):
+    """Transcribe un audio usando Groq Whisper."""
+    try:
+        # Groq requiere un objeto tipo archivo con nombre y extensión
+        audio_file = io.BytesIO(audio_bytes)
+        
+        transcription = await client.audio.transcriptions.create(
+            file=("voice_note.ogg", audio_file),
+            model=AUDIO_MODEL,
+            response_format="text"
+        )
+        return transcription
+    except Exception as e:
+        print(f"❌ Error en Groq Whisper: {e}")
+        return None
+
 async def send_whatsapp_message(to_phone: str, text: str):
     url = f"{WHATSAPP_API_URL}/{PHONE_NUMBER_ID}/messages"
     headers = {
@@ -333,6 +354,26 @@ async def receive_whatsapp(request: Request, x_hub_signature_256: str = Header(N
                     print("❌ Falló la descarga de la imagen.")
                     user_text = "El usuario envió una imagen pero no pude descargarla. Por favor verifica los permisos del token de WhatsApp para leer media."
             
+            elif msg_type == "audio":
+                audio_data = message.get("audio", {})
+                media_id = audio_data.get("id")
+                
+                print(f"🎙️ Audio recibido de {phone_number}. ID: {media_id}")
+                
+                # Confirmación opcional (si quieres que no sea demasiado intrusivo quita esto)
+                # await send_whatsapp_message(phone_number, "🎧 Estoy escuchando tu audio...")
+                
+                audio_bytes = await download_whatsapp_media(media_id)
+                if audio_bytes:
+                    transcription = await transcribe_audio(audio_bytes)
+                    if transcription:
+                        print(f"📝 Transcripción: {transcription[:50]}...")
+                        user_text = f"[NOTA DE VOZ ENVIADA POR USUARIO] - Transcripción: {transcription}"
+                    else:
+                        user_text = "El usuario envió un audio pero no pude transcribirlo."
+                else:
+                    user_text = "El usuario envió un audio pero no pude descargarlo."
+
             else:
                 print(f"❓ Tipo de mensaje no soportado: {msg_type}")
             
