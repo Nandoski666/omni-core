@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from groq import AsyncGroq
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Cargamos las variables de entorno
 load_dotenv()
