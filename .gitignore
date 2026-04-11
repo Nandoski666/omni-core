@@ -1,4 +1,7 @@
-
 .env
 __pycache__/
 *.pyc
+
+# Claves de Google no subir NUNCA
+credentials.json
+token.json

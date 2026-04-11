@@ -42,6 +42,39 @@ active_sessions = {}
 
 # --- FUNCIONES LÓGICAS ---
 
+from calendar_service import create_event
+
+# --- FUNCIONES LÓGICAS ---
+
+# Definición de herramientas para Groq
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "create_event",
+            "description": "Crea un evento en el calendario de Google",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "Título del evento o descripción breve",
+                    },
+                    "start_time_str": {
+                        "type": "string",
+                        "description": "Fecha y hora de inicio en formato ISO 8601 (ej: 2026-04-10T15:00:00)",
+                    },
+                    "duration_minutes": {
+                        "type": "integer",
+                        "description": "Duración en minutos (por defecto 30)",
+                    },
+                },
+                "required": ["summary", "start_time_str"],
+            },
+        },
+    }
+]
+
 async def get_omni_response(phone_number: str, user_text: str):
     # 1. El Cerebro Dinámico: Asistente Personal Amigable
     business_context = os.getenv(
@@ -49,55 +82,82 @@ async def get_omni_response(phone_number: str, user_text: str):
         "Eres mi Asistente Personal y Gestor de Agenda (IA). Soy tu jefe y creador.\n"
         "Tu tono debe ser súper amigable, entusiasta y muy servicial.\n\n"
         "Tus objetivos y comportamiento:\n"
-        "1. SALUDOS: Si solo te digo 'Hola', 'Buenos días' o te saludo, JAMÁS respondas algo genérico como '¿En qué puedo ayudarte?'. Siempre responde con entusiasmo recordando tu función, por ejemplo: '¡Hola! Estoy aquí listo para ayudarte a agendar todas tus citas, recordatorios y eventos. ¿Qué planes tienes hoy?'\n"
-        "2. CAPTURA DE DATOS: Cuando te cuente un plan, evento o tarea, tu misión es capturar el Nombre del Evento, la Fecha y la Hora para poder agendarlo.\n"
-        "3. PREGUNTAS AMIGABLES: Si me falta decirte la hora o el día, pregúntamelo de forma cercana (ej. '¡Súper! ¿A qué hora lo programamos?').\n"
-        "4. CONFIRMACIÓN: Cuando ya tengas los datos, confirmo con buena energía (ej. '¡Anotado! He agendado la salida de mañana a las 8:00 PM.')."
+        "1. SALUDOS: Si solo te digo 'Hola' o algo casual, responde con entusiasmo recordando que puedes agendar citas.\n"
+        "2. CAPTURA DE DATOS: Necesitas Nombre del Evento, Fecha y Hora para agendar.\n"
+        "3. ACCIÓN: Cuando tengas los datos, utiliza la herramienta 'create_event' para agendarlo de verdad.\n"
+        "HOY ES: " + datetime.now().strftime("%A, %d de %B de %Y, hora %I:%M %p")
     )
     
-    # 2. Las Reglas de Hierro y Protocolo
     strict_rules = """
-    Reglas Estrictas de Comportamiento:
-    - NUNCA des explicaciones largas ni actúes como robot frío. Eres alguien con buena vibra.
-    - NO eres servicio al cliente ni vendedor; eres mi secretario personal.
-    - Haz MÁXIMO UNA pregunta por mensaje.
-    - Resuelve la interacción en un solo párrafo corto (máximo 40 palabras).
+    Reglas Estrictas:
+    - NUNCA inventes datos si no los doy.
+    - Responde siempre en un solo párrafo corto (máx 40 palabras).
+    - Si usas la herramienta create_event, confirma al usuario que ya quedó agendado.
     """
     
     full_system_prompt = f"{business_context}\n\n{strict_rules}"
 
-    # 3. Inicializar memoria si el cliente es nuevo
     if phone_number not in active_sessions:
-        active_sessions[phone_number] = [
-            {"role": "system", "content": full_system_prompt}
-        ]
+        active_sessions[phone_number] = [{"role": "system", "content": full_system_prompt}]
     
-    # 4. Guardar mensaje del usuario
     active_sessions[phone_number].append({"role": "user", "content": user_text})
 
     try:
-        # 5. Generar respuesta blindada
-        chat_completion = await client.chat.completions.create(
-            messages=active_sessions[phone_number],
+        # 5. Generar respuesta con soporte para herramientas
+        response = await client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            max_tokens=120, # Corta la labia
-            temperature=0.2 # Más calculador, menos creativo
+            messages=active_sessions[phone_number],
+            tools=tools,
+            tool_choice="auto",
+            max_tokens=150,
+            temperature=0.2
         )
         
-        ai_answer = chat_completion.choices[0].message.content
-        
-        # 6. Guardar respuesta del bot en la memoria
+        response_message = response.choices[0].message
+        tool_calls = response_message.tool_calls
+
+        # Si la IA quiere llamar a una herramienta (agendar cita)
+        if tool_calls:
+            active_sessions[phone_number].append(response_message)
+            
+            for tool_call in tool_calls:
+                function_name = tool_call.function.name
+                function_args = json.loads(tool_call.function.arguments)
+                
+                if function_name == "create_event":
+                    print(f"📅 Agendando: {function_args}")
+                    result = create_event(
+                        summary=function_args.get("summary"),
+                        start_time_str=function_args.get("start_time_str"),
+                        duration_minutes=function_args.get("duration_minutes", 30)
+                    )
+                    
+                    active_sessions[phone_number].append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": function_name,
+                        "content": result,
+                    })
+            
+            # Segunda llamada para que la IA dé la respuesta final basada en el resultado del agendamiento
+            final_response = await client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=active_sessions[phone_number]
+            )
+            ai_answer = final_response.choices[0].message.content
+        else:
+            ai_answer = response_message.content
+
         active_sessions[phone_number].append({"role": "assistant", "content": ai_answer})
         
-        # 7. Limpiador de RAM (Mantiene el system prompt y los últimos 6 mensajes)
-        if len(active_sessions[phone_number]) > 11:
+        if len(active_sessions[phone_number]) > 12:
             active_sessions[phone_number] = [active_sessions[phone_number][0]] + active_sessions[phone_number][-6:]
 
         return ai_answer
 
     except Exception as e:
-        print(f"❌ Error en Groq: {e}")
-        return "Eche, el sistema está saturado. ¿Me repites eso?"
+        print(f"❌ Error: {e}")
+        return "Lo siento jefe, tuve un problemita técnico. ¿Me repites?"
 
 
 async def send_whatsapp_message(to_phone: str, text: str):
