@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from groq import AsyncGroq
 from dotenv import load_dotenv
 from datetime import datetime
+import base64
 
 # Cargamos las variables de entorno
 load_dotenv()
@@ -40,6 +41,9 @@ class ChatRequest(BaseModel):
 # --- MEMORIA RAM TEMPORAL ---
 # Aquí guardamos el contexto para que el bot no pierda el hilo de la charla
 active_sessions = {}
+
+# --- MODELO DE VISIÓN ---
+VISION_MODEL = "llama-3.2-11b-vision-preview"
 
 # --- FUNCIONES LÓGICAS ---
 
@@ -86,6 +90,7 @@ async def get_omni_response(phone_number: str, user_text: str):
         "1. SALUDOS: Si solo te digo 'Hola' o algo casual, responde con entusiasmo recordando que puedes agendar citas.\n"
         "2. CAPTURA DE DATOS: Necesitas Nombre del Evento, Fecha y Hora para agendar.\n"
         "3. ACCIÓN: Cuando tengas los datos, utiliza la herramienta 'create_event' para agendarlo de verdad.\n"
+        "4. IMÁGENES Y PAGOS: A veces recibirás descripciones de imágenes (como comprobantes de pago). En ese caso, confirma los datos (Banco, Monto, Referencia) y felicita al usuario por su pago o agenda la cita si la imagen era un flyer.\n"
         "HOY ES: " + datetime.now().strftime("%A, %d de %B de %Y, hora %I:%M %p")
     )
     
@@ -161,6 +166,65 @@ async def get_omni_response(phone_number: str, user_text: str):
         return "Lo siento jefe, tuve un problemita técnico. ¿Me repites?"
 
 
+async def download_whatsapp_media(media_id: str):
+    """Descarga un archivo de medios (imagen) de WhatsApp."""
+    url = f"{WHATSAPP_API_URL}/{media_id}"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+    
+    async with httpx.AsyncClient() as http_client:
+        # 1. Obtener la URL de descarga
+        response = await http_client.get(url, headers=headers)
+        if response.status_code != 200:
+            print(f"❌ Error al obtener URL de medios: {response.text}")
+            return None
+        
+        media_url = response.json().get("url")
+        if not media_url:
+            return None
+            
+        # 2. Descargar el archivo binario
+        media_response = await http_client.get(media_url, headers=headers)
+        if media_response.status_code != 200:
+            print(f"❌ Error al descargar medios: {media_response.text}")
+            return None
+            
+        return media_response.content
+
+async def analyze_image_with_vision(image_bytes: bytes):
+    """Usa el modelo de visión de Groq para extraer datos de la imagen."""
+    try:
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+        
+        prompt = (
+            "Eres un experto en extracción de datos. Analiza esta imagen enviada por un cliente.\n"
+            "1. Si es un COMPROBANTE DE PAGO: Extrae Banco, Monto, Fecha y Referencia.\n"
+            "2. Si es para una CITA/CALENDARIO: Extrae Título del evento, Fecha, Hora y descripción.\n"
+            "Responde con un resumen claro de lo que encontraste para que yo pueda procesarlo."
+        )
+        
+        response = await client.chat.completions.create(
+            model=VISION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}",
+                            },
+                        },
+                    ],
+                }
+            ],
+            max_tokens=300,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"❌ Error en Groq Vision: {e}")
+        return "No pude leer la imagen correctamente."
+
 async def send_whatsapp_message(to_phone: str, text: str):
     url = f"{WHATSAPP_API_URL}/{PHONE_NUMBER_ID}/messages"
     headers = {
@@ -229,10 +293,31 @@ async def receive_whatsapp(request: Request, x_hub_signature_256: str = Header(N
         if "messages" in value:
             message = value["messages"][0]
             phone_number = message["from"]
-            user_text = message.get("text", {}).get("body", "")
+            msg_type = message.get("type")
+            
+            user_text = ""
+            
+            if msg_type == "text":
+                user_text = message.get("text", {}).get("body", "")
+                print(f"🌊 Nuevo mensaje de {phone_number}: {user_text}")
+                
+            elif msg_type == "image":
+                image_data = message.get("image", {})
+                media_id = image_data.get("id")
+                caption = image_data.get("caption", "")
+                
+                print(f"📸 Imagen recibida de {phone_number}. Procesando...")
+                
+                image_bytes = await download_whatsapp_media(media_id)
+                if image_bytes:
+                    analysis = await analyze_image_with_vision(image_bytes)
+                    user_text = f"[IMAGEN ENVIADA POR USUARIO] - Descripción de la IA: {analysis}"
+                    if caption:
+                        user_text += f"\nComentario del usuario: {caption}"
+                else:
+                    user_text = "El usuario envió una imagen pero no pude descargarla."
             
             if user_text:
-                print(f"🌊 Nuevo mensaje de {phone_number}: {user_text}")
                 # 🔥 EJECUCIÓN DIRECTA
                 await process_whatsapp_ai(phone_number, user_text)
         else:
