@@ -43,8 +43,9 @@ class ChatRequest(BaseModel):
 active_sessions = {}
 
 # --- MODELO DE VISIÓN ---
-# Nota: Si este modelo falla, intenta con 'llama-3.2-90b-vision-preview'
-VISION_MODEL = "llama-3.2-11b-vision-preview"
+# Nota: Llama 4 Scout es el modelo multimodal más reciente en Groq
+VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+FALLBACK_VISION_MODEL = "llama-3.2-11b-vision-preview"
 
 # --- FUNCIONES LÓGICAS ---
 
@@ -197,34 +198,42 @@ async def analyze_image_with_vision(image_bytes: bytes):
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
         
         prompt = (
-            "Eres un experto en extracción de datos. Analiza esta imagen enviada por un cliente.\n"
-            "1. Si es un COMPROBANTE DE PAGO: Extrae Banco, Monto, Fecha y Referencia.\n"
-            "2. Si es para una CITA/CALENDARIO: Extrae Título del evento, Fecha, Hora y descripción.\n"
-            "Responde con un resumen claro de lo que encontraste para que yo pueda procesarlo."
+            "Analiza esta imagen de un cliente y extrae los datos clave.\n"
+            "- Si es un comprobante de pago: banco, monto, fecha, referencia.\n"
+            "- Si es una cita: título, fecha, hora.\n"
+            "Responde de forma concisa y directa."
         )
         
-        response = await client.chat.completions.create(
-            model=VISION_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}",
+        async def call_model(model_id):
+            return await client.chat.completions.create(
+                model=model_id,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}",
+                                },
                             },
-                        },
-                    ],
-                }
-            ],
-            max_tokens=300,
-        )
+                        ],
+                    }
+                ],
+                max_tokens=300,
+            )
+
+        try:
+            response = await call_model(VISION_MODEL)
+        except Exception:
+            print(f"⚠️ {VISION_MODEL} falló, intentando fallback...")
+            response = await call_model(FALLBACK_VISION_MODEL)
+            
         return response.choices[0].message.content
     except Exception as e:
-        print(f"❌ Error en Groq Vision: {e}")
-        return "No pude leer la imagen correctamente."
+        print(f"❌ Error total en Groq Vision: {e}")
+        return f"Error técnico al analizar la imagen: {str(e)}"
 
 async def send_whatsapp_message(to_phone: str, text: str):
     url = f"{WHATSAPP_API_URL}/{PHONE_NUMBER_ID}/messages"
