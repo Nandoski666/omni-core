@@ -1,4 +1,5 @@
 import os.path
+import json
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -10,14 +11,21 @@ SCOPES = ['https://www.googleapis.com/auth/calendar']
 
 def get_calendar_service():
     creds = None
-    if os.path.exists('token.json'):
+    # Prioridad 1: Variable de entorno (Para Render.com)
+    env_token = os.getenv("GOOGLE_TOKEN_JSON")
+    if env_token:
+        print("Usando token desde variable de entorno.")
+        creds = Credentials.from_authorized_user_info(json.loads(env_token), SCOPES)
+    
+    # Prioridad 2: Archivo local (Para desarrollo local)
+    elif os.path.exists('token.json'):
+        print("Usando token desde archivo local.")
         creds = Credentials.from_authorized_user_file('token.json', SCOPES)
     
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            # Si llegamos aquí sin token, hay que correr calendar_auth.py primero
             return None
             
     return build('calendar', 'v3', credentials=creds)
