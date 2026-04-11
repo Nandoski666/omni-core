@@ -43,6 +43,7 @@ class ChatRequest(BaseModel):
 active_sessions = {}
 
 # --- MODELO DE VISIÓN ---
+# Nota: Si este modelo falla, intenta con 'llama-3.2-90b-vision-preview'
 VISION_MODEL = "llama-3.2-11b-vision-preview"
 
 # --- FUNCIONES LÓGICAS ---
@@ -306,16 +307,25 @@ async def receive_whatsapp(request: Request, x_hub_signature_256: str = Header(N
                 media_id = image_data.get("id")
                 caption = image_data.get("caption", "")
                 
-                print(f"📸 Imagen recibida de {phone_number}. Procesando...")
+                print(f"📸 Imagen recibida de {phone_number}. ID: {media_id}")
+                
+                # Enviar confirmación inmediata para que el usuario sepa que algo está pasando
+                await send_whatsapp_message(phone_number, "📸 He recibido tu imagen, jefe. Dame un momento para analizarla...")
                 
                 image_bytes = await download_whatsapp_media(media_id)
                 if image_bytes:
+                    print(f"✅ Imagen descargada ({len(image_bytes)} bytes). Analizando con {VISION_MODEL}...")
                     analysis = await analyze_image_with_vision(image_bytes)
+                    print(f"📝 Análisis completado: {analysis[:50]}...")
                     user_text = f"[IMAGEN ENVIADA POR USUARIO] - Descripción de la IA: {analysis}"
                     if caption:
                         user_text += f"\nComentario del usuario: {caption}"
                 else:
-                    user_text = "El usuario envió una imagen pero no pude descargarla."
+                    print("❌ Falló la descarga de la imagen.")
+                    user_text = "El usuario envió una imagen pero no pude descargarla. Por favor verifica los permisos del token de WhatsApp para leer media."
+            
+            else:
+                print(f"❓ Tipo de mensaje no soportado: {msg_type}")
             
             if user_text:
                 # 🔥 EJECUCIÓN DIRECTA
