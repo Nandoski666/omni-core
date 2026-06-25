@@ -33,36 +33,42 @@ app.add_middleware(
 user_states = {}
 
 # --- RESPUESTAS PREDETERMINADAS ---
-WELCOME_MESSAGE = """¡Hola! Bienvenido a nuestra academia de peluquería.
+WELCOME_MESSAGE = """👋 ¡Hola! Bienvenido a nuestra academia de peluquería ✂️
 
 Por favor, elige un curso para ver más información:
 
-1. Curso 1: Corte de cabello para Dama
-2. Curso 2: Barbería y Corte de caballero
-3. Curso 3: Cortes infantiles / Peinados
+1️⃣ Curso 1: Corte de cabello para Dama
+2️⃣ Curso 2: Barbería y Corte de caballero
+3️⃣ Curso 3: Cortes infantiles / Peinados
 
-Responde con el número del curso que te interesa."""
+Responde con el número del curso que te interesa 👇"""
 
-COURSE_1 = """Curso 1: Corte de cabello para Dama
+COURSE_1 = """✂️ Curso 1: Corte de cabello para Dama
 
-Duración: 4 semanas
-Precio: $150.000 COP"""
+⏱️ Duración: 4 semanas
+💰 Precio: $150.000 COP
 
-COURSE_2 = """Curso 2: Barbería y Corte de caballero
+💬 Escribe "menu" para ver otras opciones"""
 
-Duración: 6 semanas
-Precio: $200.000 COP"""
+COURSE_2 = """💈 Curso 2: Barbería y Corte de caballero
 
-COURSE_3 = """Curso 3: Cortes infantiles / Peinados
+⏱️ Duración: 6 semanas
+💰 Precio: $200.000 COP
 
-Duración: 3 semanas
-Precio: $120.000 COP"""
+💬 Escribe "menu" para ver otras opciones"""
 
-INVALID_OPTION = """Opción no válida. Por favor, elige una opción del 1 al 3:
+COURSE_3 = """👧 Curso 3: Cortes infantiles / Peinados
 
-1. Curso 1: Corte de cabello para Dama
-2. Curso 2: Barbería y Corte de caballero
-3. Curso 3: Cortes infantiles / Peinados"""
+⏱️ Duración: 3 semanas
+💰 Precio: $120.000 COP
+
+💬 Escribe "menu" para ver otras opciones"""
+
+INVALID_OPTION = """❌ Opción no válida. Por favor, elige una opción del 1 al 3:
+
+1️⃣ Curso 1: Corte de cabello para Dama
+2️⃣ Curso 2: Barbería y Corte de caballero
+3️⃣ Curso 3: Cortes infantiles / Peinados"""
 
 # --- FUNCIONES LÓGICAS ---
 
@@ -98,6 +104,22 @@ async def process_bot_message(phone_number: str, user_text: str):
         # Obtener estado actual del usuario
         current_state = user_states.get(phone_number, "welcome")
         
+        # Función helper para procesar selección de curso
+        async def handle_course_selection(text: str):
+            if text in ["1", "curso 1", "curso1", "dama", "corte dama"]:
+                await send_whatsapp_message(phone_number, COURSE_1)
+                user_states[phone_number] = "course_selected"
+                return True
+            elif text in ["2", "curso 2", "curso2", "barberia", "barbería", "caballero", "corte caballero"]:
+                await send_whatsapp_message(phone_number, COURSE_2)
+                user_states[phone_number] = "course_selected"
+                return True
+            elif text in ["3", "curso 3", "curso3", "infantil", "infantiles", "peinados", "corte infantil"]:
+                await send_whatsapp_message(phone_number, COURSE_3)
+                user_states[phone_number] = "course_selected"
+                return True
+            return False
+        
         if current_state == "welcome" or is_greeting:
             # Enviar mensaje de bienvenida con opciones
             user_states[phone_number] = "menu"
@@ -105,25 +127,19 @@ async def process_bot_message(phone_number: str, user_text: str):
             
         elif current_state == "menu":
             # Procesar selección de curso
-            if text in ["1", "curso 1", "curso1", "dama", "corte dama"]:
-                await send_whatsapp_message(phone_number, COURSE_1)
-                user_states[phone_number] = "course_selected"
-            elif text in ["2", "curso 2", "curso2", "barberia", "barbería", "caballero", "corte caballero"]:
-                await send_whatsapp_message(phone_number, COURSE_2)
-                user_states[phone_number] = "course_selected"
-            elif text in ["3", "curso 3", "curso3", "infantil", "infantiles", "peinados", "corte infantil"]:
-                await send_whatsapp_message(phone_number, COURSE_3)
-                user_states[phone_number] = "course_selected"
-            else:
+            handled = await handle_course_selection(text)
+            if not handled:
                 await send_whatsapp_message(phone_number, INVALID_OPTION)
                 
         elif current_state == "course_selected":
-            # Si ya seleccionó un curso, volver a mostrar menú
-            if is_greeting or text in ["menu", "menú", "volver", "opciones", "otro"]:
-                user_states[phone_number] = "menu"
-                await send_whatsapp_message(phone_number, WELCOME_MESSAGE)
-            else:
-                await send_whatsapp_message(phone_number, INVALID_OPTION)
+            # Permitir seleccionar otro curso directamente O volver al menú
+            handled = await handle_course_selection(text)
+            if not handled:
+                if is_greeting or text in ["menu", "menú", "volver", "opciones", "otro"]:
+                    user_states[phone_number] = "menu"
+                    await send_whatsapp_message(phone_number, WELCOME_MESSAGE)
+                else:
+                    await send_whatsapp_message(phone_number, INVALID_OPTION)
                 
     except Exception as e:
         print(f"[ERROR] ERROR CRITICO EN PROCESAMIENTO: {e}")
