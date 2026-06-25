@@ -2,7 +2,6 @@ fastapi
 uvicorn
 python-dotenv
 httpx
-groq
 pydantic
 google-api-python-client
 google-auth-httplib2

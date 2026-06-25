@@ -6,16 +6,12 @@ import httpx
 from fastapi import FastAPI, Request, HTTPException, Header, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from groq import AsyncGroq
 from dotenv import load_dotenv
-from datetime import datetime
-import base64
-import io
 
 # Cargamos las variables de entorno
 load_dotenv()
 
-app = FastAPI(title="OMNI Neural Core - B2B Agency Edition")
+app = FastAPI(title="OMNI Bot - Cursos de Peluquería")
 
 # --- CONFIGURACIÓN ---
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "omni_pro_2026")
@@ -33,228 +29,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inicializamos Groq en modo Asíncrono 🚀
-client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+# Almacenamiento simple en memoria para el estado de conversación por usuario
+user_states = {}
 
-class ChatRequest(BaseModel):
-    prompt: str
+# --- RESPUESTAS PREDETERMINADAS ---
+WELCOME_MESSAGE = """¡Hola! Bienvenido a nuestra academia de peluquería.
 
-# --- MEMORIA RAM TEMPORAL ---
-# Aquí guardamos el contexto para que el bot no pierda el hilo de la charla
-active_sessions = {}
+Por favor, elige un curso para ver más información:
 
-# --- MODELO DE VISIÓN ---
-# Nota: Llama 4 Scout es el modelo multimodal más reciente en Groq
-VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-FALLBACK_VISION_MODEL = "llama-3.2-11b-vision-preview"
+1. Curso 1: Corte de cabello para Dama
+2. Curso 2: Barbería y Corte de caballero
+3. Curso 3: Cortes infantiles / Peinados
 
-# --- MODELO DE AUDIO ---
-AUDIO_MODEL = "whisper-large-v3"
+Responde con el número del curso que te interesa."""
+
+COURSE_1 = """Curso 1: Corte de cabello para Dama
+
+Duración: 4 semanas
+Precio: $150.000 COP"""
+
+COURSE_2 = """Curso 2: Barbería y Corte de caballero
+
+Duración: 6 semanas
+Precio: $200.000 COP"""
+
+COURSE_3 = """Curso 3: Cortes infantiles / Peinados
+
+Duración: 3 semanas
+Precio: $120.000 COP"""
+
+INVALID_OPTION = """Opción no válida. Por favor, elige una opción del 1 al 3:
+
+1. Curso 1: Corte de cabello para Dama
+2. Curso 2: Barbería y Corte de caballero
+3. Curso 3: Cortes infantiles / Peinados"""
 
 # --- FUNCIONES LÓGICAS ---
-
-from calendar_service import create_event
-
-# --- FUNCIONES LÓGICAS ---
-
-# Definición de herramientas para Groq
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "create_event",
-            "description": "Crea un evento en el calendario de Google",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "summary": {
-                        "type": "string",
-                        "description": "Título del evento o descripción breve",
-                    },
-                    "start_time_str": {
-                        "type": "string",
-                        "description": "Fecha y hora de inicio en formato ISO 8601 (ej: 2026-04-10T15:00:00)",
-                    },
-                    "duration_minutes": {
-                        "type": "integer",
-                        "description": "Duración en minutos (por defecto 30)",
-                    },
-                },
-                "required": ["summary", "start_time_str"],
-            },
-        },
-    }
-]
-
-async def get_omni_response(phone_number: str, user_text: str):
-    # 1. El Cerebro Dinámico: Asistente Personal Amigable
-    business_context = os.getenv(
-        "BUSINESS_PROMPT", 
-        "Eres mi Asistente Personal y Gestor de Agenda (IA). Soy tu jefe y creador.\n"
-        "Tu tono debe ser súper amigable, entusiasta y muy servicial.\n\n"
-        "Tus objetivos y comportamiento:\n"
-        "1. SALUDOS: Si solo te digo 'Hola' o algo casual, responde con entusiasmo recordando que puedes agendar citas.\n"
-        "2. CAPTURA DE DATOS: Necesitas Nombre del Evento, Fecha y Hora para agendar.\n"
-        "3. ACCIÓN: Cuando tengas los datos, utiliza la herramienta 'create_event' para agendarlo de verdad.\n"
-        "4. IMÁGENES Y PAGOS: A veces recibirás descripciones de imágenes (como comprobantes de pago). En ese caso, confirma los datos (Banco, Monto, Referencia) y felicita al usuario por su pago o agenda la cita si la imagen era un flyer.\n"
-        "5. NOTAS DE VOZ: Si recibes una transcripción de un audio, actúa como si te lo hubieran dicho en persona, con mucho entusiasmo y confirmando los detalles si se trata de una cita.\n"
-        "HOY ES: " + datetime.now().strftime("%A, %d de %B de %Y, hora %I:%M %p")
-    )
-    
-    strict_rules = """
-    Reglas Estrictas:
-    - NUNCA inventes datos si no los doy.
-    - Responde siempre en un solo párrafo corto (máx 40 palabras).
-    - Si usas la herramienta create_event, confirma al usuario que ya quedó agendado.
-    """
-    
-    full_system_prompt = f"{business_context}\n\n{strict_rules}"
-
-    if phone_number not in active_sessions:
-        active_sessions[phone_number] = [{"role": "system", "content": full_system_prompt}]
-    
-    active_sessions[phone_number].append({"role": "user", "content": user_text})
-
-    try:
-        # 5. Generar respuesta con soporte para herramientas
-        response = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=active_sessions[phone_number],
-            tools=tools,
-            tool_choice="auto",
-            max_tokens=150,
-            temperature=0.2
-        )
-        
-        response_message = response.choices[0].message
-        tool_calls = response_message.tool_calls
-
-        # Si la IA quiere llamar a una herramienta (agendar cita)
-        if tool_calls:
-            active_sessions[phone_number].append(response_message)
-            
-            for tool_call in tool_calls:
-                function_name = tool_call.function.name
-                function_args = json.loads(tool_call.function.arguments)
-                
-                if function_name == "create_event":
-                    print(f"📅 Agendando: {function_args}")
-                    result = create_event(
-                        summary=function_args.get("summary"),
-                        start_time_str=function_args.get("start_time_str"),
-                        duration_minutes=function_args.get("duration_minutes", 30)
-                    )
-                    
-                    active_sessions[phone_number].append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": function_name,
-                        "content": result,
-                    })
-            
-            # Segunda llamada para que la IA dé la respuesta final basada en el resultado del agendamiento
-            final_response = await client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=active_sessions[phone_number]
-            )
-            ai_answer = final_response.choices[0].message.content
-        else:
-            ai_answer = response_message.content
-
-        active_sessions[phone_number].append({"role": "assistant", "content": ai_answer})
-        
-        if len(active_sessions[phone_number]) > 12:
-            active_sessions[phone_number] = [active_sessions[phone_number][0]] + active_sessions[phone_number][-6:]
-
-        return ai_answer
-
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        return "Lo siento jefe, tuve un problemita técnico. ¿Me repites?"
-
-
-async def download_whatsapp_media(media_id: str):
-    """Descarga un archivo de medios (imagen) de WhatsApp."""
-    url = f"{WHATSAPP_API_URL}/{media_id}"
-    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
-    
-    async with httpx.AsyncClient() as http_client:
-        # 1. Obtener la URL de descarga
-        response = await http_client.get(url, headers=headers)
-        if response.status_code != 200:
-            print(f"❌ Error al obtener URL de medios: {response.text}")
-            return None
-        
-        media_url = response.json().get("url")
-        if not media_url:
-            return None
-            
-        # 2. Descargar el archivo binario
-        media_response = await http_client.get(media_url, headers=headers)
-        if media_response.status_code != 200:
-            print(f"❌ Error al descargar medios: {media_response.text}")
-            return None
-            
-        return media_response.content
-
-async def analyze_image_with_vision(image_bytes: bytes):
-    """Usa el modelo de visión de Groq para extraer datos de la imagen."""
-    try:
-        base64_image = base64.b64encode(image_bytes).decode('utf-8')
-        
-        prompt = (
-            "Analiza esta imagen de un cliente y extrae los datos clave.\n"
-            "- Si es un comprobante de pago: banco, monto, fecha, referencia.\n"
-            "- Si es una cita: título, fecha, hora.\n"
-            "Responde de forma concisa y directa."
-        )
-        
-        async def call_model(model_id):
-            return await client.chat.completions.create(
-                model=model_id,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}",
-                                },
-                            },
-                        ],
-                    }
-                ],
-                max_tokens=300,
-            )
-
-        try:
-            response = await call_model(VISION_MODEL)
-        except Exception:
-            print(f"⚠️ {VISION_MODEL} falló, intentando fallback...")
-            response = await call_model(FALLBACK_VISION_MODEL)
-            
-        return response.choices[0].message.content
-    except Exception as e:
-        print(f"❌ Error total en Groq Vision: {e}")
-        return f"Error técnico al analizar la imagen: {str(e)}"
-
-async def transcribe_audio(audio_bytes: bytes):
-    """Transcribe un audio usando Groq Whisper."""
-    try:
-        # Groq requiere un objeto tipo archivo con nombre y extensión
-        audio_file = io.BytesIO(audio_bytes)
-        
-        transcription = await client.audio.transcriptions.create(
-            file=("voice_note.ogg", audio_file),
-            model=AUDIO_MODEL,
-            response_format="text"
-        )
-        return transcription
-    except Exception as e:
-        print(f"❌ Error en Groq Whisper: {e}")
-        return None
 
 async def send_whatsapp_message(to_phone: str, text: str):
     url = f"{WHATSAPP_API_URL}/{PHONE_NUMBER_ID}/messages"
@@ -270,25 +80,59 @@ async def send_whatsapp_message(to_phone: str, text: str):
     }
     async with httpx.AsyncClient() as http_client:
         response = await http_client.post(url, json=payload, headers=headers)
-        print(f"📩 Respuesta de Meta al enviar: {response.status_code}")
+        print(f"[MSG] Respuesta de Meta al enviar: {response.status_code}")
         if response.status_code != 200:
-            print(f"⚠️ Detalle error Meta: {response.text}")
+            print(f"[WARN] Detalle error Meta: {response.text}")
 
-async def process_whatsapp_ai(phone_number: str, user_text: str):
+async def process_bot_message(phone_number: str, user_text: str):
     try:
-        print(f"🧠 Pensando respuesta para {phone_number}...")
-        # ⚠️ IMPORTANTE: Aquí ahora le pasamos el phone_number a Groq para la memoria
-        ai_answer = await get_omni_response(phone_number, user_text)
-        print(f"🗣️ OMNI dice: {ai_answer}")
-        await send_whatsapp_message(phone_number, ai_answer)
+        print(f"[BOT] Procesando mensaje de {phone_number}: {user_text}")
+        
+        # Normalizar el texto
+        text = user_text.strip().lower()
+        
+        # Verificar si es un saludo inicial
+        greetings = ["hola", "buenos", "buenas", "hi", "hello", "inicio", "empezar", "menu", "menú"]
+        is_greeting = any(greeting in text for greeting in greetings)
+        
+        # Obtener estado actual del usuario
+        current_state = user_states.get(phone_number, "welcome")
+        
+        if current_state == "welcome" or is_greeting:
+            # Enviar mensaje de bienvenida con opciones
+            user_states[phone_number] = "menu"
+            await send_whatsapp_message(phone_number, WELCOME_MESSAGE)
+            
+        elif current_state == "menu":
+            # Procesar selección de curso
+            if text in ["1", "curso 1", "curso1", "dama", "corte dama"]:
+                await send_whatsapp_message(phone_number, COURSE_1)
+                user_states[phone_number] = "course_selected"
+            elif text in ["2", "curso 2", "curso2", "barberia", "barbería", "caballero", "corte caballero"]:
+                await send_whatsapp_message(phone_number, COURSE_2)
+                user_states[phone_number] = "course_selected"
+            elif text in ["3", "curso 3", "curso3", "infantil", "infantiles", "peinados", "corte infantil"]:
+                await send_whatsapp_message(phone_number, COURSE_3)
+                user_states[phone_number] = "course_selected"
+            else:
+                await send_whatsapp_message(phone_number, INVALID_OPTION)
+                
+        elif current_state == "course_selected":
+            # Si ya seleccionó un curso, volver a mostrar menú
+            if is_greeting or text in ["menu", "menú", "volver", "opciones", "otro"]:
+                user_states[phone_number] = "menu"
+                await send_whatsapp_message(phone_number, WELCOME_MESSAGE)
+            else:
+                await send_whatsapp_message(phone_number, INVALID_OPTION)
+                
     except Exception as e:
-        print(f"🚨 ERROR CRÍTICO EN PROCESAMIENTO: {e}")
+        print(f"[ERROR] ERROR CRITICO EN PROCESAMIENTO: {e}")
 
 # --- ENDPOINTS ---
 
 @app.get("/")
 def home():
-    return {"status": "OMNI Core Online 🚀"}
+    return {"status": "OMNI Core Online"}
 
 @app.get("/webhook")
 async def verify_webhook(request: Request):
@@ -297,7 +141,7 @@ async def verify_webhook(request: Request):
     challenge = request.query_params.get("hub.challenge")
 
     if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN:
-        print("✅ WEBHOOK_VERIFIED")
+        print("[OK] WEBHOOK_VERIFIED")
         return Response(content=challenge, media_type="text/plain")
     
     return Response(content="Token invalido", status_code=403)
@@ -307,13 +151,13 @@ async def receive_whatsapp(request: Request, x_hub_signature_256: str = Header(N
     body_bytes = await request.body()
     
     data = json.loads(body_bytes.decode('utf-8'))
-    print(f"🔍 JSON RECIBIDO: {json.dumps(data, indent=2)}")
+    print(f"[JSON] JSON RECIBIDO: {json.dumps(data, indent=2)}")
 
     # Seguridad HMAC SHA-256
     if META_APP_SECRET and x_hub_signature_256:
         signature = hmac.new(META_APP_SECRET.encode('utf-8'), body_bytes, hashlib.sha256).hexdigest()
         if f"sha256={signature}" != x_hub_signature_256:
-            print("❌ Firma inválida")
+            print("[ERROR] Firma inválida")
             raise HTTPException(status_code=401, detail="Firma inválida")
 
     try:
@@ -324,66 +168,15 @@ async def receive_whatsapp(request: Request, x_hub_signature_256: str = Header(N
         if "messages" in value:
             message = value["messages"][0]
             phone_number = message["from"]
-            msg_type = message.get("type")
-            
-            user_text = ""
-            
-            if msg_type == "text":
-                user_text = message.get("text", {}).get("body", "")
-                print(f"🌊 Nuevo mensaje de {phone_number}: {user_text}")
-                
-            elif msg_type == "image":
-                image_data = message.get("image", {})
-                media_id = image_data.get("id")
-                caption = image_data.get("caption", "")
-                
-                print(f"📸 Imagen recibida de {phone_number}. ID: {media_id}")
-                
-                # Enviar confirmación inmediata para que el usuario sepa que algo está pasando
-                await send_whatsapp_message(phone_number, "📸 He recibido tu imagen, jefe. Dame un momento para analizarla...")
-                
-                image_bytes = await download_whatsapp_media(media_id)
-                if image_bytes:
-                    print(f"✅ Imagen descargada ({len(image_bytes)} bytes). Analizando con {VISION_MODEL}...")
-                    analysis = await analyze_image_with_vision(image_bytes)
-                    print(f"📝 Análisis completado: {analysis[:50]}...")
-                    user_text = f"[IMAGEN ENVIADA POR USUARIO] - Descripción de la IA: {analysis}"
-                    if caption:
-                        user_text += f"\nComentario del usuario: {caption}"
-                else:
-                    print("❌ Falló la descarga de la imagen.")
-                    user_text = "El usuario envió una imagen pero no pude descargarla. Por favor verifica los permisos del token de WhatsApp para leer media."
-            
-            elif msg_type == "audio":
-                audio_data = message.get("audio", {})
-                media_id = audio_data.get("id")
-                
-                print(f"🎙️ Audio recibido de {phone_number}. ID: {media_id}")
-                
-                # Confirmación opcional (si quieres que no sea demasiado intrusivo quita esto)
-                # await send_whatsapp_message(phone_number, "🎧 Estoy escuchando tu audio...")
-                
-                audio_bytes = await download_whatsapp_media(media_id)
-                if audio_bytes:
-                    transcription = await transcribe_audio(audio_bytes)
-                    if transcription:
-                        print(f"📝 Transcripción: {transcription[:50]}...")
-                        user_text = f"[NOTA DE VOZ ENVIADA POR USUARIO] - Transcripción: {transcription}"
-                    else:
-                        user_text = "El usuario envió un audio pero no pude transcribirlo."
-                else:
-                    user_text = "El usuario envió un audio pero no pude descargarlo."
-
-            else:
-                print(f"❓ Tipo de mensaje no soportado: {msg_type}")
+            user_text = message.get("text", {}).get("body", "")
             
             if user_text:
-                # 🔥 EJECUCIÓN DIRECTA
-                await process_whatsapp_ai(phone_number, user_text)
+                print(f"[MSG] Nuevo mensaje de {phone_number}: {user_text}")
+                await process_bot_message(phone_number, user_text)
         else:
-            print("ℹ️ Webhook recibido pero no contiene mensajes.")
+            print("[INFO] Webhook recibido pero no contiene mensajes.")
             
     except Exception as e:
-        print(f"❌ Error procesando JSON: {e}")
+        print(f"[ERROR] Error procesando JSON: {e}")
 
     return {"status": "received"}
