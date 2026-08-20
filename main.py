@@ -258,10 +258,35 @@ async def home():
         "brand": BRAND_NAME,
         "sales_url": SALES_URL,
         "catalog_configured": bool(CATALOG_CSV_URL),
+        "catalog_url_hint": CATALOG_CSV_URL[:60] + "..." if len(CATALOG_CSV_URL) > 60 else CATALOG_CSV_URL,
         "products_loaded": len(products),
         "products_names": [p["nombre"] for p in products],
         "current_product_fallback": CURRENT_PRODUCT or "(sin fallback)",
     }
+
+
+@app.get("/debug-catalog")
+async def debug_catalog():
+    """Fuerza una recarga del catálogo y devuelve el detalle crudo del fetch."""
+    import time as _t
+    if not CATALOG_CSV_URL:
+        return {"error": "CATALOG_CSV_URL no está configurado"}
+    result = {"url_used": CATALOG_CSV_URL}
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as http_client:
+            r = await http_client.get(CATALOG_CSV_URL)
+            result["http_status"] = r.status_code
+            result["content_type"] = r.headers.get("content-type", "")
+            result["first_500_chars"] = r.text[:500]
+            result["total_bytes"] = len(r.text)
+    except Exception as e:
+        result["fetch_error"] = str(e)
+        return result
+    # Force refresh
+    catalog._last_refresh_ts = 0
+    await catalog.refresh_if_stale(CATALOG_CSV_URL, CATALOG_CACHE_SECONDS, SALES_URL)
+    result["products_after_refresh"] = [p["nombre"] for p in catalog.get_products()]
+    return result
 
 
 @app.get("/webhook")
