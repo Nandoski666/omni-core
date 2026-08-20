@@ -32,7 +32,7 @@ SALES_URL = os.getenv("SALES_URL", "https://merca.me")
 CURRENT_PRODUCT = os.getenv("CURRENT_PRODUCT", "").strip()
 CURRENT_PRODUCT_ANGLE = os.getenv("CURRENT_PRODUCT_ANGLE", "").strip()
 
-LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.1-8b-instant")
+LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 VISION_MODEL = os.getenv("VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 FALLBACK_VISION_MODEL = os.getenv("FALLBACK_VISION_MODEL", "llama-3.2-11b-vision-preview")
 AUDIO_MODEL = os.getenv("AUDIO_MODEL", "whisper-large-v3")
