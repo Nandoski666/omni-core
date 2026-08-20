@@ -32,7 +32,7 @@ SALES_URL = os.getenv("SALES_URL", "https://merca.me")
 CURRENT_PRODUCT = os.getenv("CURRENT_PRODUCT", "").strip()
 CURRENT_PRODUCT_ANGLE = os.getenv("CURRENT_PRODUCT_ANGLE", "").strip()
 
-LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
+LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.1-8b-instant")
 VISION_MODEL = os.getenv("VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 FALLBACK_VISION_MODEL = os.getenv("FALLBACK_VISION_MODEL", "llama-3.2-11b-vision-preview")
 AUDIO_MODEL = os.getenv("AUDIO_MODEL", "whisper-large-v3")
@@ -236,12 +236,18 @@ async def get_sales_response(phone: str, user_text: str) -> str:
         response = await client.chat.completions.create(
             model=LLM_MODEL,
             messages=messages,
-            max_tokens=180,
+            max_tokens=400,
             temperature=0.6,
         )
-        answer = response.choices[0].message.content.strip()
+        msg = response.choices[0].message
+        answer = (getattr(msg, "content", "") or "").strip()
+        if not answer:
+            # Algunos modelos (gpt-oss) usan reasoning_content
+            reasoning = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None)
+            print(f"⚠️ content vacío. reasoning={str(reasoning)[:200]}", flush=True)
+            answer = str(reasoning or "").strip() or "¡Hola! 💜 ¿En qué te ayudo?"
     except Exception as e:
-        print(f"❌ Groq error: {e}")
+        print(f"❌ Groq error: {e}", flush=True)
         answer = "Perdona, tuve un problemita técnico 🙏 ¿Me repites en un momento?"
     append_to_session(phone, {"role": "assistant", "content": answer})
     return answer
