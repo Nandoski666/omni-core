@@ -32,11 +32,14 @@ async def _fetch_csv(url: str) -> list[dict]:
         response.raise_for_status()
         text = response.text
     reader = csv.DictReader(io.StringIO(text))
+    fieldnames_lower = {(f or "").strip().lower() for f in (reader.fieldnames or [])}
+    has_activo_col = "activo" in fieldnames_lower
     products = []
     for row in reader:
         # Normaliza claves (quita espacios, ignora mayúsculas)
         normalized = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
-        if not _is_truthy(normalized.get("activo")):
+        # Si existe columna "activo", respetarla; si no existe, considerar todo activo
+        if has_activo_col and not _is_truthy(normalized.get("activo")):
             continue
         nombre = normalized.get("nombre", "")
         if not nombre:
@@ -47,6 +50,7 @@ async def _fetch_csv(url: str) -> list[dict]:
             "precio": normalized.get("precio", ""),
             "link": normalized.get("link", "") or normalized.get("url", ""),
             "categoria": normalized.get("categoría", "") or normalized.get("categoria", ""),
+            "stock": normalized.get("stock", ""),
             "es_ganador": _is_truthy(normalized.get("ganador")),
         })
     return products
@@ -85,6 +89,8 @@ def _format_product_line(p: dict, sales_url: str) -> str:
         parts.append(f"— {p['descripcion']}")
     if p["precio"]:
         parts.append(f"— Precio ref: {p['precio']}")
+    if p.get("stock"):
+        parts.append(f"— Stock: {p['stock']}")
     parts.append(f"— {link}")
     return " ".join(parts)
 
