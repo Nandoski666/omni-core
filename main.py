@@ -18,6 +18,8 @@ from dotenv import load_dotenv
 import catalog
 
 THINK_TAGS_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+THINK_UNCLOSED_RE = re.compile(r"<think>.*", re.DOTALL | re.IGNORECASE)
+THINK_LEADING_RE = re.compile(r"^.*?</think>", re.DOTALL | re.IGNORECASE)
 
 # --- ENV ---
 load_dotenv()
@@ -234,8 +236,22 @@ async def transcribe_audio(audio_bytes: bytes) -> str | None:
 
 # --- IA: RESPUESTA DE SOFÍA ---
 
+def _strip_thinking(text: str) -> str:
+    """Elimina chain-of-thought de modelos qwen/deepseek en cualquier forma."""
+    # 1. Bloques cerrados <think>...</think>
+    out = THINK_TAGS_RE.sub("", text)
+    # 2. Si sigue habiendo </think> al inicio (respuesta empieza con cierre solamente)
+    if "</think>" in out.lower():
+        out = THINK_LEADING_RE.sub("", out, count=1)
+    # 3. Bloques abiertos sin cierre (<think> sin </think> — se corta a mitad)
+    out = THINK_UNCLOSED_RE.sub("", out)
+    return out.strip()
+
+
 async def get_sales_response(phone: str, user_text: str) -> str:
-    messages = append_to_session(phone, {"role": "user", "content": user_text})
+    # Convención qwen: sufijo /no_think fuerza respuesta directa
+    user_message_for_llm = f"{user_text} /no_think"
+    messages = append_to_session(phone, {"role": "user", "content": user_message_for_llm})
     try:
         response = await client.chat.completions.create(
             model=LLM_MODEL,
@@ -245,17 +261,16 @@ async def get_sales_response(phone: str, user_text: str) -> str:
         )
         msg = response.choices[0].message
         raw = (getattr(msg, "content", "") or "").strip()
-        # Quitar bloques <think>...</think> de modelos con chain-of-thought (qwen)
-        cleaned = THINK_TAGS_RE.sub("", raw).strip()
-        # Si quedó vacío por que solo había <think>, usa reasoning como fallback
+        cleaned = _strip_thinking(raw)
         if not cleaned:
             reasoning = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None)
-            print(f"⚠️ content solo tenía <think>. reasoning={str(reasoning)[:200]}", flush=True)
-            cleaned = str(reasoning or "").strip() or "¡Hola! 💜 ¿En qué te ayudo?"
+            print(f"⚠️ content vacío tras strip. raw={raw[:200]} reasoning={str(reasoning)[:200]}", flush=True)
+            cleaned = _strip_thinking(str(reasoning or "")) or "¡Hola! 💜 ¿En qué te ayudo?"
         answer = cleaned
     except Exception as e:
         print(f"❌ Groq error: {e}", flush=True)
         answer = "Perdona, tuve un problemita técnico 🙏 ¿Me repites en un momento?"
+    # Guarda en historial el mensaje SIN el sufijo /no_think (para conversación limpia)
     append_to_session(phone, {"role": "assistant", "content": answer})
     return answer
 
