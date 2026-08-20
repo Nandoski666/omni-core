@@ -271,6 +271,27 @@ async def home():
     }
 
 
+@app.get("/debug-models")
+async def debug_models():
+    """Lista los modelos disponibles con la GROQ_API_KEY actual."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as http_client:
+            r = await http_client.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {os.getenv('GROQ_API_KEY', '')}"},
+            )
+            data = r.json()
+            models = [m.get("id") for m in data.get("data", [])]
+            return {
+                "http_status": r.status_code,
+                "total_models": len(models),
+                "models": sorted(models),
+                "current_llm_model_setting": LLM_MODEL,
+            }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/debug-catalog")
 async def debug_catalog():
     """Fuerza una recarga del catálogo y devuelve el detalle crudo del fetch."""
