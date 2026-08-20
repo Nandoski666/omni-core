@@ -13,6 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from groq import AsyncGroq
 from dotenv import load_dotenv
 
+import catalog
+
 # --- ENV ---
 load_dotenv()
 
@@ -38,6 +40,10 @@ AUDIO_MODEL = os.getenv("AUDIO_MODEL", "whisper-large-v3")
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_HOURS", "24")) * 3600
 MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "20"))
 
+# --- CATÁLOGO (Google Sheet publicado como CSV) ---
+CATALOG_CSV_URL = os.getenv("CATALOG_CSV_URL", "").strip()
+CATALOG_CACHE_SECONDS = int(os.getenv("CATALOG_CACHE_MINUTES", "5")) * 60
+
 # --- MIDDLEWARE ---
 app.add_middleware(
     CORSMiddleware,
@@ -55,10 +61,9 @@ client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
 active_sessions: dict[str, dict] = {}
 
 # --- SYSTEM PROMPT: ASESOR DE VENTAS ---
-SYSTEM_PROMPT_TEMPLATE = """Eres "Sofía", asesora de ventas senior de {BRAND_NAME} ({SALES_URL}). Escribes por WhatsApp a clientes que llegaron desde un anuncio de Facebook/Instagram promocionando:
-"{CURRENT_PRODUCT}" — {CURRENT_PRODUCT_ANGLE}
+SYSTEM_PROMPT_TEMPLATE = """Eres "Sofía", asesora de ventas senior de {BRAND_NAME} ({SALES_URL}). Escribes por WhatsApp a clientes que llegaron desde un anuncio de Facebook/Instagram.
 
-MISIÓN: hacer sentir escuchado al cliente, resolver dudas y guiarlo a comprar en {SALES_URL}.
+MISIÓN: hacer sentir escuchado al cliente, resolver dudas y guiarlo a comprar el producto correcto en {SALES_URL}.
 
 TONO Y ESTILO:
 - Humana, cálida, cercana. 1-2 emojis por mensaje MÁXIMO.
@@ -70,29 +75,35 @@ MÉTODO DE VENTA (SPIN adaptado):
 1. SALUDO Y CONEXIÓN: si es el primer mensaje, saluda con calidez, agradece que escribió y pregunta ABIERTA qué le llamó la atención del anuncio o qué necesita.
 2. DESCUBRIMIENTO: haz 1-2 preguntas cortas para entender uso, urgencia y para quién. UNA pregunta por mensaje, nunca interrogatorio.
 3. VALIDACIÓN: refleja lo que entendiste con empatía ("Entiendo, buscas X porque Y...").
-4. PROPUESTA: explica cómo {CURRENT_PRODUCT} resuelve su necesidad SIN inventar precios, stock, tallas, colores, plazos ni promociones. Habla de beneficios y experiencia.
+4. PROPUESTA: recomienda el PRODUCTO del catálogo que mejor le sirva. Explica beneficios concretos y por qué encaja con lo que él dijo.
 5. MANEJO DE OBJECIONES: Precio → valor y facilidad de compra. Duda → seguridad y soporte. Tiempo → invita a ver detalles sin presión.
-6. CIERRE Y REDIRECCIÓN: cuando muestre interés real (pregunta precio, disponibilidad, "cómo compro", "quiero uno"), envía:
-   "Aquí ves todos los detalles, precios actualizados y compras en 2 minutos: {SALES_URL} — cuando lo abras me avisas si te ayudo con algo 💜"
-   NO mandes el link en el primer mensaje. Solo tras generar interés.
-
+6. CIERRE Y REDIRECCIÓN: cuando muestre interés real, envía el LINK DEL PRODUCTO específico:
+   "Aquí ves los detalles y compras en 2 minutos 👉 [link del producto] — cuéntame cuando lo abras 💜"
+   NO mandes link en el primer mensaje. Solo tras generar interés.
+{CATALOG_BLOCK}
 REGLAS ESTRICTAS (NO NEGOCIABLES):
-- JAMÁS inventes precios, descuentos, stock, tiempos de envío, garantías específicas, métodos de pago ni políticas. Si preguntan, responde: "Los precios y detalles siempre actualizados están aquí: {SALES_URL}".
 - Si el cliente se enoja, insulta, pide reembolso, reporta un pedido con problema, o pide hablar con un humano: responde "Entiendo, voy a pasar tu caso a un asesor humano ahora mismo para que te atienda personalmente 🙏" y NO intentes resolverlo tú.
-- Si envían foto de un producto ("quiero algo así"), confirma qué viste y redirige a {SALES_URL} sugiriendo buscar por categoría.
+- Si envían foto de un producto ("quiero algo así"), confirma qué viste y sugiere el producto del catálogo que más se parece con su link.
 - Nunca hables de temas ajenos a {BRAND_NAME}.
 - Un mensaje = una idea. No listes 5 preguntas juntas.
 """
 
 
 def build_system_prompt() -> str:
-    product = CURRENT_PRODUCT or "nuestros productos destacados"
-    angle = CURRENT_PRODUCT_ANGLE or "productos seleccionados con mucho cuidado para nuestros clientes"
+    catalog_block = catalog.get_formatted_for_prompt()
+    if not catalog_block:
+        # Fallback si aún no hay catálogo: usa CURRENT_PRODUCT si existe
+        product = CURRENT_PRODUCT or "nuestros productos destacados"
+        angle = CURRENT_PRODUCT_ANGLE or "productos seleccionados con mucho cuidado"
+        catalog_block = (
+            f"\nPRODUCTO PROMOCIONADO ACTUALMENTE: {product} — {angle}\n"
+            f"Redirige siempre a {SALES_URL} para precios y detalles actualizados.\n"
+            "REGLA: no inventes precios ni stock específicos.\n"
+        )
     return SYSTEM_PROMPT_TEMPLATE.format(
         BRAND_NAME=BRAND_NAME,
         SALES_URL=SALES_URL,
-        CURRENT_PRODUCT=product,
-        CURRENT_PRODUCT_ANGLE=angle,
+        CATALOG_BLOCK=catalog_block,
     )
 
 
@@ -220,12 +231,17 @@ async def get_sales_response(phone: str, user_text: str) -> str:
 # --- ENDPOINTS ---
 
 @app.get("/")
-def home():
+async def home():
+    await catalog.refresh_if_stale(CATALOG_CSV_URL, CATALOG_CACHE_SECONDS, SALES_URL)
+    products = catalog.get_products()
     return {
         "status": "online",
         "brand": BRAND_NAME,
         "sales_url": SALES_URL,
-        "current_product": CURRENT_PRODUCT or "(genérico)",
+        "catalog_configured": bool(CATALOG_CSV_URL),
+        "products_loaded": len(products),
+        "products_names": [p["nombre"] for p in products],
+        "current_product_fallback": CURRENT_PRODUCT or "(sin fallback)",
     }
 
 
@@ -260,6 +276,7 @@ async def receive_whatsapp(request: Request, x_hub_signature_256: str = Header(N
         return {"status": "invalid_json"}
 
     # Responder rápido a Meta y procesar en background
+    asyncio.create_task(catalog.refresh_if_stale(CATALOG_CSV_URL, CATALOG_CACHE_SECONDS, SALES_URL))
     asyncio.create_task(_handle_event(data))
     return {"status": "received"}
 
