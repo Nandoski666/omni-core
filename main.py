@@ -7,6 +7,8 @@ import asyncio
 import base64
 import io
 
+import re
+
 import httpx
 from fastapi import FastAPI, Request, HTTPException, Header, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +16,8 @@ from groq import AsyncGroq
 from dotenv import load_dotenv
 
 import catalog
+
+THINK_TAGS_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 # --- ENV ---
 load_dotenv()
@@ -236,16 +240,19 @@ async def get_sales_response(phone: str, user_text: str) -> str:
         response = await client.chat.completions.create(
             model=LLM_MODEL,
             messages=messages,
-            max_tokens=400,
+            max_tokens=1200,
             temperature=0.6,
         )
         msg = response.choices[0].message
-        answer = (getattr(msg, "content", "") or "").strip()
-        if not answer:
-            # Algunos modelos (gpt-oss) usan reasoning_content
+        raw = (getattr(msg, "content", "") or "").strip()
+        # Quitar bloques <think>...</think> de modelos con chain-of-thought (qwen)
+        cleaned = THINK_TAGS_RE.sub("", raw).strip()
+        # Si quedó vacío por que solo había <think>, usa reasoning como fallback
+        if not cleaned:
             reasoning = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None)
-            print(f"⚠️ content vacío. reasoning={str(reasoning)[:200]}", flush=True)
-            answer = str(reasoning or "").strip() or "¡Hola! 💜 ¿En qué te ayudo?"
+            print(f"⚠️ content solo tenía <think>. reasoning={str(reasoning)[:200]}", flush=True)
+            cleaned = str(reasoning or "").strip() or "¡Hola! 💜 ¿En qué te ayudo?"
+        answer = cleaned
     except Exception as e:
         print(f"❌ Groq error: {e}", flush=True)
         answer = "Perdona, tuve un problemita técnico 🙏 ¿Me repites en un momento?"
