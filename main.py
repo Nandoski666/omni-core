@@ -249,28 +249,34 @@ def _strip_thinking(text: str) -> str:
 
 
 async def get_sales_response(phone: str, user_text: str) -> str:
-    # Convención qwen: sufijo /no_think fuerza respuesta directa
-    user_message_for_llm = f"{user_text} /no_think"
-    messages = append_to_session(phone, {"role": "user", "content": user_message_for_llm})
+    messages = append_to_session(phone, {"role": "user", "content": user_text})
+
+    # Desactivar thinking mode según familia del modelo
+    extra: dict = {}
+    if LLM_MODEL.startswith("qwen"):
+        extra["reasoning_effort"] = "none"
+    elif "gpt-oss" in LLM_MODEL:
+        extra["reasoning_format"] = "hidden"
+
     try:
         response = await client.chat.completions.create(
             model=LLM_MODEL,
             messages=messages,
-            max_tokens=1200,
+            max_tokens=400,
             temperature=0.6,
+            extra_body=extra,
         )
         msg = response.choices[0].message
         raw = (getattr(msg, "content", "") or "").strip()
-        cleaned = _strip_thinking(raw)
-        if not cleaned:
+        # Safety net por si un día llegan tags <think>
+        answer = _strip_thinking(raw)
+        if not answer:
             reasoning = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None)
-            print(f"⚠️ content vacío tras strip. raw={raw[:200]} reasoning={str(reasoning)[:200]}", flush=True)
-            cleaned = _strip_thinking(str(reasoning or "")) or "¡Hola! 💜 ¿En qué te ayudo?"
-        answer = cleaned
+            print(f"⚠️ content vacío. raw={raw[:200]} reasoning={str(reasoning)[:200]}", flush=True)
+            answer = "Perdona, tuve un problemita técnico 🙏 ¿Me repites en un momento?"
     except Exception as e:
         print(f"❌ Groq error: {e}", flush=True)
         answer = "Perdona, tuve un problemita técnico 🙏 ¿Me repites en un momento?"
-    # Guarda en historial el mensaje SIN el sufijo /no_think (para conversación limpia)
     append_to_session(phone, {"role": "assistant", "content": answer})
     return answer
 
