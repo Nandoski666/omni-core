@@ -316,8 +316,16 @@ async def receive_whatsapp(request: Request, x_hub_signature_256: str = Header(N
     try:
         data = json.loads(body_bytes.decode("utf-8"))
     except Exception as e:
-        print(f"❌ JSON inválido: {e}")
+        print(f"❌ JSON inválido: {e}", flush=True)
         return {"status": "invalid_json"}
+
+    # Log resumido de qué llegó (para diagnóstico)
+    try:
+        _v = data.get("entry", [{}])[0].get("changes", [{}])[0].get("value", {})
+        _kind = "messages" if "messages" in _v else ("statuses" if "statuses" in _v else "other")
+        print(f"📥 Webhook recibido tipo={_kind}", flush=True)
+    except Exception:
+        print("📥 Webhook recibido (estructura inesperada)", flush=True)
 
     # Responder rápido a Meta y procesar en background
     asyncio.create_task(catalog.refresh_if_stale(CATALOG_CSV_URL, CATALOG_CACHE_SECONDS, SALES_URL))
@@ -343,7 +351,7 @@ async def _handle_event(data: dict) -> None:
 
         if msg_type == "text":
             user_text = message.get("text", {}).get("body", "")
-            print(f"🌊 {phone_number}: {user_text}")
+            print(f"🌊 {phone_number}: {user_text}", flush=True)
 
         elif msg_type == "image":
             image_data = message.get("image", {})
@@ -380,10 +388,12 @@ async def _handle_event(data: dict) -> None:
         if not user_text:
             return
 
-        print(f"🧠 Generando respuesta para {phone_number}...")
+        print(f"🧠 Generando respuesta para {phone_number}...", flush=True)
         answer = await get_sales_response(phone_number, user_text)
-        print(f"🗣️ Sofía: {answer}")
+        print(f"🗣️ Sofía: {answer}", flush=True)
         await send_whatsapp_message(phone_number, answer)
 
     except Exception as e:
-        print(f"🚨 Error procesando evento: {e}")
+        import traceback
+        print(f"🚨 Error procesando evento: {e}", flush=True)
+        traceback.print_exc()
